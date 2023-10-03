@@ -2,6 +2,9 @@
 #include <mutex>
 #include <vector>
 #include <thread>
+#include <array>
+
+#define MAX_THREADS 32
 
 class my_mutex
 {
@@ -13,29 +16,33 @@ public:
 class NODE {
 public:
 	int key;
-	NODE* next;
+	NODE* volatile next;
 	std::mutex nlock;
+	volatile bool removed;
 	NODE() { next = NULL; }
 	NODE(int key_value) {
 		next = NULL;
 		key = key_value;
+		removed = false;
 	}
 	~NODE() {}
 	void lock() { nlock.lock(); }
 	void unlock() { nlock.unlock(); }
 };
 
-class NODE_shared {
+class SPNODE {
 public:
 	int key;
-	std::shared_ptr<NODE_shared> next;
+	std::shared_ptr<SPNODE> next;
 	std::mutex nlock;
-	NODE_shared() { next = NULL; }
-	NODE_shared(int key_value) {
-		next = NULL;
+	volatile bool removed;
+	SPNODE() { next = nullptr; }
+	SPNODE(int key_value) {
+		next = nullptr;
 		key = key_value;
+		removed = false;
 	}
-	~NODE() {}
+	~SPNODE() {}
 	void lock() { nlock.lock(); }
 	void unlock() { nlock.unlock(); }
 };
@@ -403,44 +410,38 @@ public:
 	}
 };
 
-class OSET_shared {
-	std::shared_ptr<NODE> head, tail;
+
+class LSET {
+	NODE head, tail;
 public:
-	OSET_shared()
+	LSET()
 	{
-		head->key = 0x80000000;
-		tail->key = 0x7FFFFFFF;
-		head->next = tail;
+		head.key = 0x80000000;
+		tail.key = 0x7FFFFFFF;
+		head.next = &tail;
 	}
-	~OSET_shared() {}
+	~LSET() {}
 	void Init()
 	{
-		std::shared_ptr<NODE> ptr;
-		while (head->next.get() != tail.get()) {
-			ptr = head->next;
-			head->next = head->next->next;
+		NODE* ptr;
+		while (head.next != &tail) {
+			ptr = head.next;
+			head.next = head.next->next;
 			delete ptr;
 		}
 	}
 	bool validate(NODE* pred, NODE* curr)
 	{
-		NODE* node = head.get();
-		while (node->key <= pred->key)
-		{
-			if (node == pred)
-				return pred->next.get() == curr;
-			node = node->next.get();
-		}
-		return false;
+		return (pred->removed == false) && (curr->removed == false) && (pred->next == curr);
 	}
 	bool Add(int key)
 	{
-		std::shared_ptr<NODE> pred;
-		std::shared_ptr<NODE> curr;
+		NODE* pred;
+		NODE* curr;
 
 		while (true)
 		{
-			pred = head;
+			pred = &head;
 			curr = pred->next;
 			while (curr->key < key)
 			{
@@ -449,14 +450,14 @@ public:
 			}
 			pred->lock();
 			curr->lock();
-			if (validate(pred.get(), curr.get())) {
+			if (validate(pred, curr)) {
 				if (key == curr->key) {
 					pred->unlock();
 					curr->unlock();
 					return false;
 				}
 				else {
-					std::shared_ptr<NODE> node = std::make_shared<NODE>(key);
+					NODE* node = new NODE(key);
 					node->next = curr;
 					pred->next = node;
 					pred->unlock();
@@ -475,12 +476,12 @@ public:
 	}
 	bool Remove(int key)
 	{
-		std::shared_ptr<NODE> pred;
-		std::shared_ptr<NODE>  curr;
+		NODE* pred;
+		NODE* curr;
 
 		while (true)
 		{
-			pred = head;
+			pred = &head;
 			curr = pred->next;
 			while (curr->key < key)
 			{
@@ -489,12 +490,12 @@ public:
 			}
 			pred->lock();
 			curr->lock();
-			if (validate(pred.get(), curr.get())) {
+			if (validate(pred, curr)) {
 				if (key == curr->key) {
+					curr->removed = true;
 					pred->next = curr->next;
 					pred->unlock();
 					curr->unlock();
-					//delete curr;
 					return true;
 				}
 				else {
@@ -513,8 +514,51 @@ public:
 	}
 	bool Contains(int key)
 	{
-		std::shared_ptr<NODE> pred;
-		std::shared_ptr<NODE> curr;
+		NODE* curr = &head;
+
+		while (curr->key < key)
+		{
+			curr = curr->next;
+		}
+		return curr->key == key && curr->removed == false;
+	}
+	void Print(int count) {
+		NODE* p = head.next;
+		for (int i = 0; i < count; ++i) {
+			std::cout << p->key << " ";
+			p = p->next;
+		}
+		std::cout << std::endl;
+	}
+};
+
+
+class LSPSET {
+	std::shared_ptr<SPNODE> head, tail;
+public:
+	LSPSET()
+	{
+		head = std::make_shared<SPNODE>(0x80000000);
+		tail = std::make_shared<SPNODE>(0x7FFFFFFF);
+		head->next = tail;
+	}
+	~LSPSET() {}
+	void Init()
+	{
+		std::shared_ptr<SPNODE> ptr;
+		while (head->next != tail) {
+			ptr = head->next;
+			head->next = head->next->next;
+		}
+	}
+	bool validate(const std::shared_ptr<SPNODE>& pred, const std::shared_ptr<SPNODE>& curr)
+	{
+		return (pred->removed == false) && (curr->removed == false) && (pred->next == curr);
+	}
+	bool Add(int key)
+	{
+		std::shared_ptr<SPNODE> pred;
+		std::shared_ptr<SPNODE> curr;
 
 		while (true)
 		{
@@ -527,8 +571,50 @@ public:
 			}
 			pred->lock();
 			curr->lock();
-			if (validate(pred.get(), curr.get())) {
+			if (validate(pred, curr)) {
 				if (key == curr->key) {
+					pred->unlock();
+					curr->unlock();
+					return false;
+				}
+				else {
+					std::shared_ptr<SPNODE> node = std::make_shared<SPNODE>(key);
+					node->next = curr;
+					pred->next = node;
+					pred->unlock();
+					curr->unlock();
+					return true;
+				}
+			}
+			else {
+				pred->unlock();
+				curr->unlock();
+				continue;
+			}
+		}
+
+
+	}
+	bool Remove(int key)
+	{
+		std::shared_ptr<SPNODE> pred;
+		std::shared_ptr<SPNODE> curr;
+
+		while (true)
+		{
+			pred = head;
+			curr = pred->next;
+			while (curr->key < key)
+			{
+				pred = curr;
+				curr = curr->next;
+			}
+			pred->lock();
+			curr->lock();
+			if (validate(pred, curr)) {
+				if (key == curr->key) {
+					curr->removed = true;
+					pred->next = curr->next;
 					pred->unlock();
 					curr->unlock();
 					return true;
@@ -545,12 +631,27 @@ public:
 				continue;
 			}
 		}
+
+	}
+	bool Contains(int key)
+	{
+		std::shared_ptr<SPNODE> curr = head;
+
+		while (curr->key < key)
+		{
+			curr = curr->next;
+		}
+		return curr->key == key && curr->removed == false;
+	}
+	void Clear()
+	{
+		head->next = tail;
 	}
 	void Print(int count) {
-		NODE* p = head->next.get();
+		std::shared_ptr<SPNODE> p = head->next;
 		for (int i = 0; i < count; ++i) {
 			std::cout << p->key << " ";
-			p = p->next.get();
+			p = p->next;
 		}
 		std::cout << std::endl;
 	}
@@ -559,7 +660,7 @@ public:
 
 const auto NUM_TEST = 4000000;
 const auto KEY_RANGE = 1000;
-OSET_shared clist;
+CLIST clist;
 
 void ThreadFunc(int num_thread)
 {
@@ -581,24 +682,134 @@ void ThreadFunc(int num_thread)
 	}
 }
 
+
+class HISTORY {
+public:
+	int op;
+	int i_value;
+	bool o_value;
+	HISTORY(int o, int i, bool re) : op{ o }, i_value{ i }, o_value{ re } {};
+};
+
+
+void worker(std::vector<HISTORY>* history, int num_thread)
+{
+	int key;
+	for (int i = 0; i < NUM_TEST / num_thread; i++) {
+		switch (rand() % 3) {
+		case 0: key = rand() % KEY_RANGE;
+			clist.Add(key);
+			break;
+		case 1: key = rand() % KEY_RANGE;
+			clist.Remove(key);
+			break;
+		case 2: key = rand() % KEY_RANGE;
+			clist.Contains(key);
+			break;
+		default: std::cout << "Error\n";
+			exit(-1);
+		}
+	}
+}
+
+void worker_check(std::vector<HISTORY>* history, int num_thread)
+{
+	int key;
+	for (int i = 0; i < NUM_TEST / num_thread; i++) {
+		switch (rand() % 3) {
+		case 0: key = rand() % KEY_RANGE;
+			history->emplace_back(0, key, clist.Add(key));
+			break;
+		case 1: key = rand() % KEY_RANGE;
+			history->emplace_back(1, key, clist.Remove(key));
+			break;
+		case 2: key = rand() % KEY_RANGE;
+			history->emplace_back(2, key, clist.Contains(key));
+			break;
+		default: std::cout << "Error\n";
+			exit(-1);
+		}
+	}
+}
+
+void check_history(std::array <std::vector <HISTORY>, MAX_THREADS>& history, int num_threads)
+{
+	std::array <int, KEY_RANGE> survive = {};
+	std::cout << "Checking Consistency : ";
+	if (history[0].size() == 0) {
+		std::cout << "No history.\n";
+		return;
+	}
+	for (int i = 0; i < num_threads; ++i) {
+		for (auto& op : history[i]) {
+			if (false == op.o_value) continue;
+			if (op.op == 3) continue;
+			if (op.op == 0) survive[op.i_value]++;
+			if (op.op == 1) survive[op.i_value]--;
+		}
+	}
+	for (int i = 0; i < KEY_RANGE; ++i) {
+		int val = survive[i];
+		if (val < 0) {
+			std::cout << "ERROR. The value " << i << " removed while it is not in the set.\n";
+			exit(-1);
+		}
+		else if (val > 1) {
+			std::cout << "ERROR. The value " << i << " is added while the set already have it.\n";
+			exit(-1);
+		}
+		else if (val == 0) {
+			if (clist.Contains(i)) {
+				std::cout << "ERROR. The value " << i << " should not exists.\n";
+				exit(-1);
+			}
+		}
+		else if (val == 1) {
+			if (false == clist.Contains(i)) {
+				std::cout << "ERROR. The value " << i << " shoud exists.\n";
+				exit(-1);
+			}
+		}
+	}
+	std::cout << " OK\n";
+}
+
 void main()
 {
-	std::vector<std::thread> threads;
-	auto startTime = std::chrono::high_resolution_clock::now();
-	auto endTime = startTime;
-
-	for (int i = 1; i <= 32; i *= 2) {
-		threads.clear();
+	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
+		std::vector <std::thread> threads;
+		std::array<std::vector <HISTORY>, MAX_THREADS> history;
 		clist.Init();
-		startTime = std::chrono::high_resolution_clock::now();
-		for (int j = 0; j < i; ++j)
-			threads.emplace_back(ThreadFunc, i);
-
-		for (int j = 0; j < i; ++j)
-			threads[j].join();
-		endTime = std::chrono::high_resolution_clock::now();
+		auto start_t = std::chrono::high_resolution_clock::now();
+		for (int i = 0; i < num_threads; ++i)
+			threads.emplace_back(worker_check, &history[i], num_threads);
+		for (auto& th : threads)
+			th.join();
+		auto end_t = std::chrono::high_resolution_clock::now();
+		auto exec_t = end_t - start_t;
+		auto exec_ms = std::chrono::duration_cast<std::chrono::milliseconds>(exec_t).count();
 		//clist.Print(20);
-		std::cout << i << " Threads : " << "Time = " << std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count() << std::endl;
+		std::cout << num_threads << " Threads.  Exec Time : " << exec_ms << std::endl;
+		check_history(history, num_threads);
+	}
+
+	std::cout << "======== SPEED CHECK =============\n";
+
+	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
+		std::vector <std::thread> threads;
+		std::array<std::vector <HISTORY>, MAX_THREADS> history;
+		clist.Init();
+		auto start_t = std::chrono::high_resolution_clock::now();
+		for (int i = 0; i < num_threads; ++i)
+			threads.emplace_back(worker, &history[i], num_threads);
+		for (auto& th : threads)
+			th.join();
+		auto end_t = std::chrono::high_resolution_clock::now();
+		auto exec_t = end_t - start_t;
+		auto exec_ms = std::chrono::duration_cast<std::chrono::milliseconds>(exec_t).count();
+		//clist.Print(20);
+		std::cout << num_threads << " Threads.  Exec Time : " << exec_ms << std::endl;
+		check_history(history, num_threads);
 	}
 
 	return;
