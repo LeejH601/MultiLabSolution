@@ -563,11 +563,11 @@ public:
 		while (true)
 		{
 			pred = head;
-			curr = pred->next;
+			curr = std::atomic_load(&pred->next);
 			while (curr->key < key)
 			{
 				pred = curr;
-				curr = curr->next;
+				curr = std::atomic_load(&curr->next);
 			}
 			pred->lock();
 			curr->lock();
@@ -580,7 +580,7 @@ public:
 				else {
 					std::shared_ptr<SPNODE> node = std::make_shared<SPNODE>(key);
 					node->next = curr;
-					pred->next = node;
+					std::atomic_exchange(&pred->next,node);
 					pred->unlock();
 					curr->unlock();
 					return true;
@@ -603,18 +603,18 @@ public:
 		while (true)
 		{
 			pred = head;
-			curr = pred->next;
+			curr = std::atomic_load(&pred->next);
 			while (curr->key < key)
 			{
 				pred = curr;
-				curr = curr->next;
+				curr = std::atomic_load(&curr->next);
 			}
 			pred->lock();
 			curr->lock();
 			if (validate(pred, curr)) {
 				if (key == curr->key) {
 					curr->removed = true;
-					pred->next = curr->next;
+					std::atomic_exchange(&pred->next, curr->next); // lockÀ» °É¾î¼­ ±»ÀÌ curr->next¸¦ ¾ÆÅä¹Í ·Îµå¸¦ ÇÏÁö ¾Ê¾Æµµ ±¦ÂúÀ½
 					pred->unlock();
 					curr->unlock();
 					return true;
@@ -639,7 +639,7 @@ public:
 
 		while (curr->key < key)
 		{
-			curr = curr->next;
+			curr = std::atomic_load(&curr->next);
 		}
 		return curr->key == key && curr->removed == false;
 	}
@@ -660,7 +660,7 @@ public:
 
 const auto NUM_TEST = 4000000;
 const auto KEY_RANGE = 1000;
-CLIST clist;
+LSPSET clist;
 
 void ThreadFunc(int num_thread)
 {
