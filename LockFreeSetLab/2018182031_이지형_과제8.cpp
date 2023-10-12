@@ -519,7 +519,7 @@ public:
 		head.next = &tail;
 	}
 };
-#if 0
+
 class LSP_SET {
 	shared_ptr <SPNODE> head, tail;
 public:
@@ -629,7 +629,6 @@ public:
 		head->next = tail;
 	}
 };
-#endif
 
 
 // x86 cpu는 64비트를 쓴다면 앞에 16비트를 사용 x, 이 공간은 바로 다음 비트값에 따라 채워짐
@@ -852,7 +851,6 @@ namespace JNH {
 		}
 	};
 }
-
 using namespace JNH;
 
 class ASPNODE {
@@ -872,7 +870,6 @@ public:
 		n_lock.unlock();
 	}
 };
-
 
 class LASP2_SET {
 	atomic_shared_ptr <ASPNODE> head, tail;
@@ -983,146 +980,6 @@ public:
 		head->next = tail;
 	}
 };
-
-class ASPNODE2 {
-	mutex n_lock;
-public:
-	int v;
-	atomic<std::shared_ptr<ASPNODE2>> next;
-	volatile bool removed;
-	ASPNODE2() : v(-1), next(nullptr), removed(false) {}
-	ASPNODE2(int x) : v(x), next(nullptr), removed(false) {}
-	void lock()
-	{
-		n_lock.lock();
-	}
-	void unlock()
-	{
-		n_lock.unlock();
-	}
-};
-
-// c++20 atomic_shared_ptr 
-class LASP3_SET {
-	atomic<std::shared_ptr<ASPNODE2>> head, tail;
-public:
-	LASP3_SET()
-	{
-		head = make_shared<ASPNODE2>(0x80000000);
-		tail = make_shared<ASPNODE2>(0x7FFFFFFF);
-		shared_ptr<ASPNODE2> t = tail;
-		shared_ptr<ASPNODE2> h = head;
-		h->next = t;
-	}
-
-	~LASP3_SET()
-	{
-		//clear();
-	}
-
-	bool validate(const std::shared_ptr<ASPNODE2>& prev, const std::shared_ptr<ASPNODE2>& curr)
-	{
-		shared_ptr<ASPNODE2> t = prev->next;
-		return (prev->removed == false) && (curr->removed == false) && (t == curr);
-	}
-
-	bool ADD(int x)
-	{
-		while (true) {
-			shared_ptr<ASPNODE2> prev = head;
-			shared_ptr<ASPNODE2> curr = prev->next;
-			while (curr->v < x) {
-				prev = curr;
-				curr = curr->next;
-			}
-			prev->lock(); curr->lock();
-			if (validate(prev, curr)) {
-				if (curr->v != x) {
-					auto node = make_shared<ASPNODE2>(x);
-					node->next = curr;
-					prev->next = node;
-					curr->unlock();
-					prev->unlock();
-					return true;
-				}
-				else
-				{
-					curr->unlock();
-					prev->unlock();
-					return false;
-				}
-			}
-			else {
-				curr->unlock();
-				prev->unlock();
-			}
-		}
-	}
-
-	bool REMOVE(int x)
-	{
-		while (true) {
-			shared_ptr<ASPNODE2> prev = head;
-			shared_ptr<ASPNODE2> curr = prev->next;
-			while (curr->v < x) {
-				prev = curr;
-				curr = curr->next;
-			}
-			prev->lock(); curr->lock();
-			if (validate(prev, curr)) {
-				if (curr->v != x) {
-					curr->unlock();
-					prev->unlock();
-					return false;
-				}
-				else
-				{
-					curr->removed = true;
-					shared_ptr<ASPNODE2> t = prev;
-					shared_ptr<ASPNODE2> t2 = curr->next;
-					t->next = t2;
-					curr->unlock();
-					prev->unlock();
-					return true;
-				}
-			}
-			else {
-				curr->unlock();
-				prev->unlock();
-			}
-		}
-	}
-
-	bool CONTAINS(int x)
-	{
-		shared_ptr<ASPNODE2> curr = head;
-		while (curr->v < x)
-			curr = curr->next;
-		return (x == curr->v) && (false == curr->removed);
-	}
-
-	void print20()
-	{
-		shared_ptr<ASPNODE2> t = head;
-		shared_ptr<ASPNODE2> t2 = tail;
-		shared_ptr<ASPNODE2> p = t->next;
-		for (int i = 0; i < 20; ++i) {
-			if (p == tail.load()) break;
-			cout << p->v << ", ";
-			p = p->next;
-		}
-		cout << endl;
-	}
-
-	void clear()
-	{
-		shared_ptr<ASPNODE2> t = head;
-		shared_ptr<ASPNODE2> t2 = tail;
-		t->next = t2;
-	}
-};
-
-
 
 constexpr long long ADDR_MARK = 0xFFFFFFFFFFFFFFFE;
 class LFNODE {
@@ -1310,8 +1167,7 @@ public:
 //SET my_set;   // 성긴 동기화
 //F_SET my_set;   // 세밀한 동기화
 //O_SET my_set;	// 낙천적 동기화
-//LF_SET my_set;	// 게으른 동기화
-LASP3_SET my_set;	// c++ atomic_shared_ptr 비멈춤 동기화
+LF_SET my_set;	// 게으른 동기화
 
 
 class HISTORY {
