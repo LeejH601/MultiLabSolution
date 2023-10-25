@@ -74,7 +74,7 @@ public:
 
 const int MAX_THREADS = 32;
 thread_local queue<LFNODE*> retired;
-volatile unsigned int reservations[MAX_THREADS];
+ volatile __declspec(align(64)) unsigned int reservations[MAX_THREADS];
 
 atomic_uint epoch = 0;
 int R;

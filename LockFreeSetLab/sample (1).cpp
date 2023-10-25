@@ -4,6 +4,7 @@
 #include <vector>
 #include <array>
 #include <mutex>
+#include <set>
 
 using namespace std;
 using namespace chrono;
@@ -873,7 +874,7 @@ public:
 	}
 };
 
-
+/*
 class LASP2_SET {
 	atomic_shared_ptr <ASPNODE> head, tail;
 public:
@@ -983,7 +984,7 @@ public:
 		head->next = tail;
 	}
 };
-
+*/
 class ASPNODE2 {
 	mutex n_lock;
 public:
@@ -1259,7 +1260,7 @@ public:
 				bool removed;
 				removed = curr->get_mark();
 				LFNODE* succ = curr->get_next();
-			
+
 				flag = curr->attemptMark(succ, true);
 				if (!flag)
 					continue;
@@ -1305,13 +1306,299 @@ public:
 	}
 };
 
+enum class METHOD_TYPE
+{
+	OP_ADD,
+	OP_REMOVE,
+	OP_CONTAINS,
+	OP_CLEAR,
+	OP_EMPTY,
+	OP_GET20,
+	OP_FRONT
+};
 
+struct Invocation
+{
+	METHOD_TYPE m_op;
+	int v;
+};
+
+struct Response
+{
+	bool res;
+	std::vector<int> get20;
+};
+
+class SeqObject_set
+{
+public:
+	std::set<int> m_set;
+public:
+	Response apply(Invocation& inv)
+	{
+		Response res;
+
+		switch (inv.m_op)
+		{
+		case METHOD_TYPE::OP_ADD:
+			res.res = (m_set.count(inv.v) == 0);
+			if (res.res == true)
+				m_set.insert(inv.v);
+			break;
+		case METHOD_TYPE::OP_REMOVE:
+			res.res = (m_set.count(inv.v) == 1);
+			if (res.res == true)
+				m_set.erase(inv.v);
+			break;
+		case METHOD_TYPE::OP_CONTAINS:
+			res.res = (m_set.count(inv.v) == 1);
+			break;
+		case METHOD_TYPE::OP_CLEAR:
+			m_set.clear();
+			break;
+		case METHOD_TYPE::OP_EMPTY:
+			res.res = m_set.empty();
+			break;
+		case METHOD_TYPE::OP_GET20:
+		{
+			int count = 20;
+			for (auto v : m_set) {
+				if (count < 0)
+					break;
+				res.get20.emplace_back(v);
+				count--;
+			}
+		}
+			break;
+		default:
+			cout << "Unknown Method!" << endl;
+			exit(-1);
+			break;
+		}
+
+		return res;
+	}
+};
+
+
+class UNODE;
+class Consensus
+{
+	UNODE* ptr = nullptr;
+public:
+	Consensus() : ptr{ nullptr } {};
+	bool CAS(UNODE* old_p, UNODE* new_p)
+	{
+		return atomic_compare_exchange_strong(
+			reinterpret_cast<atomic_llong*>(&ptr), reinterpret_cast<long long*>(&old_p), reinterpret_cast<long long>(new_p));
+	}
+
+	UNODE* decide(UNODE* v)
+	{
+		CAS(nullptr, v);
+		return ptr;
+	}
+};
+
+
+
+class STD_SET {
+	SeqObject_set std_set;
+public:
+	STD_SET()
+	{
+
+	}
+	bool ADD(int x)
+	{
+		Invocation inv(METHOD_TYPE::OP_ADD, x);
+		Response a = std_set.apply(inv);
+		return a.res;
+	}
+
+	bool REMOVE(int x)
+	{
+		Invocation inv(METHOD_TYPE::OP_REMOVE, x);
+		Response a = std_set.apply(inv);
+		return a.res;
+	}
+
+	bool CONTAINS(int x)
+	{
+		Invocation inv(METHOD_TYPE::OP_CONTAINS, x);
+		Response a = std_set.apply(inv);
+		return a.res;
+	}
+	void print20()
+	{
+		int count = 20;
+		for (auto& p : std_set.m_set) {
+			cout << p << ", ";
+			count--;
+			if (count == 0) break;
+		}
+
+		cout << endl;
+	}
+
+	void clear()
+	{
+		Invocation inv(METHOD_TYPE::OP_CLEAR, 0);
+		Response a = std_set.apply(inv);
+	}
+};
+
+thread_local int tl_id;
+
+int Thread_id()
+{
+	return tl_id;
+}
+
+class UNODE
+{
+public:
+	Invocation inv;
+	UNODE* next;
+	Consensus decided_next;
+	volatile int seq;
+	UNODE() : next{ nullptr }, seq{ 0 } {};
+	UNODE(Invocation& v) : inv{ v } {};
+};
+
+class LF_UNIV_STD_SET {
+private:
+	UNODE* head[MAX_THREADS];
+	UNODE tail;
+public:
+	LF_UNIV_STD_SET() {
+		tail.seq = 0;
+		for (int i = 0; i < MAX_THREADS; ++i) head[i] = &tail;
+	}
+	UNODE* max_node()
+	{
+		UNODE* max_node = head[0];
+		for (int i = 1; i < MAX_THREADS; ++i)
+			if (head[i]->seq > max_node->seq)
+				max_node = head[i];
+
+		return max_node;
+	}
+
+	Response apply(Invocation invoc) {
+		int i = Thread_id();
+		UNODE* prefer = new UNODE(invoc);
+		while (prefer->seq == 0) {
+			UNODE* before = max_node();
+			UNODE* after = before->decided_next.decide(prefer);
+			before->next = after; after->seq = before->seq + 1;
+			head[i] = after;
+		}
+		SeqObject_set myObject;
+		UNODE* current = tail.next;
+		while (current != prefer) {
+			myObject.apply(current->inv);
+			current = current->next;
+		}
+		return myObject.apply(current->inv);
+	}};
+class LF_STD_SET {
+	LF_UNIV_STD_SET std_set;
+public:
+	LF_STD_SET()
+	{
+
+	}
+	bool ADD(int x)
+	{
+		Invocation inv(METHOD_TYPE::OP_ADD, x);
+		Response a = std_set.apply(inv);
+		return a.res;
+	}
+
+	bool REMOVE(int x)
+	{
+		Invocation inv(METHOD_TYPE::OP_REMOVE, x);
+		Response a = std_set.apply(inv);
+		return a.res;
+	}
+
+	bool CONTAINS(int x)
+	{
+		Invocation inv(METHOD_TYPE::OP_CONTAINS, x);
+		Response a = std_set.apply(inv);
+		return a.res;
+	}
+	void print20()
+	{
+		Invocation inv{ METHOD_TYPE::OP_GET20, 0 };
+		Response a = std_set.apply(inv);
+
+		for (auto n : a.get20)
+			cout << n << ", ";
+
+		cout << endl;
+	}
+
+	void clear()
+	{
+		Invocation inv(METHOD_TYPE::OP_CLEAR, 0);
+		Response a = std_set.apply(inv);
+	}
+};
+
+class WF_UNIV_STD_SET {
+private:
+	UNODE* announce[MAX_THREADS];
+	UNODE* head[MAX_THREADS];
+	UNODE tail;
+public:
+	WF_UNIV_STD_SET() {
+		tail.seq = 0;
+		for (int i = 0; i < MAX_THREADS; ++i) {
+			head[i] = &tail;
+			announce[i] = &tail;
+		}
+	}
+
+	UNODE* max_node()
+	{
+		UNODE* max_node = head[0];
+		for (int i = 1; i < MAX_THREADS; ++i)
+			if (head[i]->seq > max_node->seq)
+				max_node = head[i];
+
+		return max_node;
+	}
+
+	Response apply(Invocation invoc) {
+		int i = Thread_id();
+		announce[i] = new UNODE(invoc);
+		UNODE* prefer = new UNODE(invoc);
+		head[i] = max_node();
+		while (prefer->seq == 0) {
+			UNODE* before = max_node();
+			UNODE* after = before->decided_next.decide(prefer);
+			before->next = after; after->seq = before->seq + 1;
+			head[i] = after;
+		}
+		SeqObject_set myObject;
+		UNODE* current = tail.next;
+		while (current != prefer) {
+			myObject.apply(current->inv);
+			current = current->next;
+		}
+		return myObject.apply(current->inv);
+	}};
+
+#define MY_SET LF_SET
 
 //SET my_set;   // 성긴 동기화
 //F_SET my_set;   // 세밀한 동기화
 //O_SET my_set;	// 낙천적 동기화
 //LF_SET my_set;	// 게으른 동기화
-LASP3_SET my_set;	// c++ atomic_shared_ptr 비멈춤 동기화
+//LASP3_SET my_set;	// c++ atomic_shared_ptr 비멈춤 동기화
+//LF_STD_SET my_set;	// 
 
 
 class HISTORY {
@@ -1323,56 +1610,59 @@ public:
 };
 
 constexpr int RANGE = 1000;
+constexpr int N = 4000;
 
-void worker(vector<HISTORY>* history, int num_threads)
+void worker(MY_SET* my_set, vector<HISTORY>* history, int num_threads, int thread_id)
 {
-	for (int i = 0; i < 4000000 / num_threads; ++i) {
+	tl_id = thread_id;
+	for (int i = 0; i < N / num_threads; ++i) {
 		int op = rand() % 3;
 		switch (op) {
 		case 0: {
 			int v = rand() % RANGE;
-			my_set.ADD(v);
+			my_set->ADD(v);
 			break;
 		}
 		case 1: {
 			int v = rand() % RANGE;
-			my_set.REMOVE(v);
+			my_set->REMOVE(v);
 			break;
 		}
 		case 2: {
 			int v = rand() % RANGE;
-			my_set.CONTAINS(v);
+			my_set->CONTAINS(v);
 			break;
 		}
 		}
 	}
 }
 
-void worker_check(vector<HISTORY>* history, int num_threads)
+void worker_check(MY_SET* my_set, vector<HISTORY>* history, int num_threads, int thread_id)
 {
-	for (int i = 0; i < 4000000 / num_threads; ++i) {
+	tl_id = thread_id;
+	for (int i = 0; i < N / num_threads; ++i) {
 		int op = rand() % 3;
 		switch (op) {
 		case 0: {
 			int v = rand() % RANGE;
-			history->emplace_back(0, v, my_set.ADD(v));
+			history->emplace_back(0, v, my_set->ADD(v));
 			break;
 		}
 		case 1: {
 			int v = rand() % RANGE;
-			history->emplace_back(1, v, my_set.REMOVE(v));
+			history->emplace_back(1, v, my_set->REMOVE(v));
 			break;
 		}
 		case 2: {
 			int v = rand() % RANGE;
-			history->emplace_back(2, v, my_set.CONTAINS(v));
+			history->emplace_back(2, v, my_set->CONTAINS(v));
 			break;
 		}
 		}
 	}
 }
 
-void check_history(array <vector <HISTORY>, MAX_THREADS>& history, int num_threads)
+void check_history(MY_SET* my_set, array <vector <HISTORY>, MAX_THREADS>& history, int num_threads)
 {
 	array <int, RANGE> survive = {};
 	cout << "Checking Consistency : ";
@@ -1399,13 +1689,13 @@ void check_history(array <vector <HISTORY>, MAX_THREADS>& history, int num_threa
 			exit(-1);
 		}
 		else if (val == 0) {
-			if (my_set.CONTAINS(i)) {
+			if (my_set->CONTAINS(i)) {
 				cout << "ERROR. The value " << i << " should not exists.\n";
 				exit(-1);
 			}
 		}
 		else if (val == 1) {
-			if (false == my_set.CONTAINS(i)) {
+			if (false == my_set->CONTAINS(i)) {
 				cout << "ERROR. The value " << i << " shoud exists.\n";
 				exit(-1);
 			}
@@ -1419,10 +1709,10 @@ int main()
 	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
 		vector <thread> threads;
 		array<vector <HISTORY>, MAX_THREADS> history;
-		my_set.clear();
+		MY_SET my_set;
 		auto start_t = high_resolution_clock::now();
 		for (int i = 0; i < num_threads; ++i)
-			threads.emplace_back(worker_check, &history[i], num_threads);
+			threads.emplace_back(worker_check, &my_set, &history[i], num_threads, i);
 		for (auto& th : threads)
 			th.join();
 		auto end_t = high_resolution_clock::now();
@@ -1430,7 +1720,7 @@ int main()
 		auto exec_ms = duration_cast<milliseconds>(exec_t).count();
 		my_set.print20();
 		cout << num_threads << " Threads.  Exec Time : " << exec_ms << endl;
-		check_history(history, num_threads);
+		check_history(&my_set, history, num_threads);
 	}
 
 	cout << "======== SPEED CHECK =============\n";
@@ -1438,10 +1728,10 @@ int main()
 	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
 		vector <thread> threads;
 		array<vector <HISTORY>, MAX_THREADS> history;
-		my_set.clear();
+		MY_SET my_set;
 		auto start_t = high_resolution_clock::now();
 		for (int i = 0; i < num_threads; ++i)
-			threads.emplace_back(worker, &history[i], num_threads);
+			threads.emplace_back(worker, &my_set , &history[i], num_threads, i);
 		for (auto& th : threads)
 			th.join();
 		auto end_t = high_resolution_clock::now();
@@ -1449,6 +1739,6 @@ int main()
 		auto exec_ms = duration_cast<milliseconds>(exec_t).count();
 		my_set.print20();
 		cout << num_threads << " Threads.  Exec Time : " << exec_ms << endl;
-		check_history(history, num_threads);
+		check_history(&my_set, history, num_threads);
 	}
 }
