@@ -1501,7 +1501,9 @@ public:
 			current = current->next;
 		}
 		return myObject.apply(current->inv);
-	}};
+	}
+};
+
 class LF_STD_SET {
 	LF_UNIV_STD_SET std_set;
 public:
@@ -1589,7 +1591,8 @@ public:
 			current = current->next;
 		}
 		return myObject.apply(current->inv);
-	}};
+	}
+};
 
 #define MY_SET LF_SET
 
