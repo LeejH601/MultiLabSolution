@@ -1369,7 +1369,7 @@ public:
 				count--;
 			}
 		}
-		break;
+			break;
 		default:
 			cout << "Unknown Method!" << endl;
 			exit(-1);
@@ -1600,13 +1600,10 @@ public:
 	int v;
 	SKNODE* volatile next[TOP_LEVEL + 1];
 	int top_level;
-	volatile bool removed;
-	volatile bool fullylinked;
-	recursive_mutex nlock;
-	SKNODE() : v(-1), top_level(0), removed(false), fullylinked(false) {
+	SKNODE() : v(-1), top_level(0) {
 		for (auto& n : next) n = nullptr;
 	}
-	SKNODE(int x, int top) : v(x), top_level(top), removed(false), fullylinked(false) {
+	SKNODE(int x, int top) : v(x), top_level(top) {
 		for (auto& n : next) n = nullptr;
 	}
 };
@@ -1619,12 +1616,10 @@ public:
 	{
 		for (auto& n : head.next)
 			n = &tail;
-
 	}
 
 	void Find(int x, SKNODE* preds[], SKNODE* currs[])
 	{
-
 		for (int cl = TOP_LEVEL; cl >= 0; --cl) {
 			if (cl == TOP_LEVEL)
 				preds[cl] = &head;
@@ -1731,430 +1726,7 @@ public:
 	}
 };
 
-class SK_LSET {
-	SKNODE head{ INT_MIN, TOP_LEVEL }, tail{ INT_MAX, TOP_LEVEL };
-public:
-	SK_LSET()
-	{
-		for (auto& n : head.next)
-			n = &tail;
-		head.fullylinked = true;
-		tail.fullylinked = true;
-	}
-
-	~SK_LSET()
-	{
-		clear();
-	}
-
-	int Find(int x, SKNODE* preds[], SKNODE* currs[])
-	{
-		int f_level = -1;
-		for (int cl = TOP_LEVEL; cl >= 0; --cl) {
-			if (cl == TOP_LEVEL)
-				preds[cl] = &head;
-			else
-				preds[cl] = preds[cl + 1];
-			currs[cl] = preds[cl]->next[cl];
-			while (currs[cl]->v < x) {
-				preds[cl] = currs[cl];
-				currs[cl] = currs[cl]->next[cl];
-			}
-			if (currs[cl]->v == x && (f_level == -1))
-				f_level = cl;
-		}
-		return f_level;
-	}
-
-	bool ADD(int x)
-	{
-		SKNODE* pred[TOP_LEVEL + 1];
-		SKNODE* curr[TOP_LEVEL + 1];
-
-		int level = 0;
-		for (level = 0; level < TOP_LEVEL; ++level)
-			if (rand() % 2 == 1) break;
-
-		while (true)
-		{
-			int f_level = Find(x, pred, curr);
-
-			if (f_level != -1) {
-				if (curr[f_level]->removed)
-					continue;
-				else {
-					while (curr[f_level]->fullylinked == false) {}
-					return false;
-				}
-			}
-
-
-			bool invalid = false;
-			int locked_top = 0;
-			for (int i = 0; i <= level; ++i) {
-				pred[i]->nlock.lock();
-				if (pred[i]->removed == true || pred[i]->next[i] != curr[i]) {
-					invalid = true;
-					locked_top = i;
-					break;
-				}
-			}
-			if (invalid) {
-				for (int i = 0; i <= locked_top; ++i)
-					pred[i]->nlock.unlock();
-				continue;
-			}
-
-
-			SKNODE* node = new SKNODE(x, level);
-			for (int i = 0; i <= level; ++i) {
-				node->next[i] = curr[i];
-			}
-			for (int i = 0; i <= level; ++i) {
-				pred[i]->next[i] = node;
-			}
-			node->fullylinked = true;
-			for (int i = level; i >= 0; --i) {
-				pred[i]->nlock.unlock();
-			}
-			return true;
-		}
-	}
-
-	bool REMOVE(int x)
-	{
-		SKNODE* pred[TOP_LEVEL + 1];
-		SKNODE* curr[TOP_LEVEL + 1];
-
-		bool isRemoving = false;
-		while (true)
-		{
-			int f_level = Find(x, pred, curr);
-			if (f_level == -1)
-				return false;
-
-			SKNODE* victim = curr[f_level];
-
-			if (isRemoving == false) {
-				if (victim->fullylinked == false) return false;
-				if (victim->removed == true) return false;
-				if (victim->top_level != f_level) return false;
-
-				victim->nlock.lock();
-				if (victim->removed == false)
-					victim->removed = true;
-				else {
-					victim->nlock.unlock();
-					return false;
-				}
-				isRemoving = true;
-			}
-
-			int top_level = victim->top_level;
-
-			// Locking
-			bool invalid = false;
-			int locked_top = 0;
-			for (int i = 0; i <= top_level; ++i) {
-				pred[i]->nlock.lock();
-				if (pred[i]->removed == true || pred[i]->next[i] != victim) {
-					invalid = true;
-					locked_top = i;
-					break;
-				}
-			}
-			if (invalid) {
-				for (int i = 0; i <= locked_top; ++i)
-					pred[i]->nlock.unlock();
-				continue;
-			}
-
-			// Remove
-			for (int i = top_level; i >= 0; --i) {
-				pred[i]->next[i] = victim->next[i];
-			}
-			for (int i = top_level; i >= 0; --i) {
-				pred[i]->nlock.unlock();
-			}
-			victim->nlock.unlock();
-			//delete victim;
-			return true;
-		}
-	}
-
-	bool CONTAINS(int x)
-	{
-		SKNODE* pred[TOP_LEVEL + 1];
-		SKNODE* curr[TOP_LEVEL + 1];
-
-		int f_level = Find(x, pred, curr);
-		if (f_level == -1)
-			return false;
-
-		SKNODE* target = curr[f_level];
-
-		return (f_level == target->top_level)
-			&& (target->fullylinked == true)
-			&& (target->removed == false);
-	}
-	void print20()
-	{
-		SKNODE* p = head.next[0];
-		for (int i = 0; i < 20; ++i) {
-			if (p == &tail) break;
-			cout << p->v << ", ";
-			p = p->next[0];
-		}
-		cout << endl;
-	}
-
-	void clear()
-	{
-		SKNODE* p = head.next[0];
-		while (p != &tail) {
-			SKNODE* t = p;
-			p = p->next[0];
-			delete t;
-		}
-		for (auto& n : head.next)
-			n = &tail;
-	}
-};
-
-constexpr long long ADDR_MASK = 0xFFFFFFFFFFFFFFFE;
-class LFSKNODE {
-	LFSKNODE* volatile next[TOP_LEVEL + 1];
-public:
-	int v;
-	int top_level;
-
-
-	LFSKNODE() : v(-1), top_level(0) {
-		for (auto& n : next) n = nullptr;
-	}
-	LFSKNODE(int x, int top) : v(x), top_level(top) {
-		for (auto& n : next) n = nullptr;
-	}
-
-	void set(int level, LFSKNODE* ptr, bool marking)
-	{
-		long long temp = reinterpret_cast<long long>(ptr);
-		if (marking)
-			temp = temp | 1;
-
-		next[level] = reinterpret_cast<LFSKNODE*>(temp);
-	}
-
-	LFSKNODE* get(int level, bool* removed)
-	{
-		long long temp = reinterpret_cast<long long>(next[level]);
-
-		*removed = (temp & 1) == 1;
-
-		return reinterpret_cast<LFSKNODE*>(temp & ADDR_MASK);
-	}
-	LFSKNODE* get(int level)
-	{
-		long long temp = reinterpret_cast<long long>(next[level]);
-
-		return reinterpret_cast<LFSKNODE*>(temp & ADDR_MASK);
-	}
-
-	bool CAS(int level, LFSKNODE* old_node, LFSKNODE* new_node, bool old_mark, bool new_mark)
-	{
-		long long oldvalue = reinterpret_cast<long long>(old_node);
-		if (old_mark) oldvalue = oldvalue | 1;
-		//else oldvalue = oldvalue & ADDR_MARK;
-
-		long long newalue = reinterpret_cast<long long> (new_node);
-		if (new_mark) newalue = newalue | 1;
-		//else newalue = newalue & ADDR_MARK;
-
-		return std::atomic_compare_exchange_strong(reinterpret_cast<volatile atomic_llong*>(&next[level]), &oldvalue, newalue);
-	}
-};
-
-class LF_SKSET {
-	LFSKNODE head, tail;
-public:
-	LF_SKSET()
-	{
-		head.v = 0x80000000;
-		tail.v = 0x7FFFFFFF;
-		for (int i = 0; i <= TOP_LEVEL; ++i)
-			head.set(i, &tail, false);
-	}
-	~LF_SKSET()
-	{
-		clear();
-	}
-
-	int Find(int x, LFSKNODE* prev[], LFSKNODE* curr[])
-	{
-	retry:
-		prev[TOP_LEVEL] = &head;
-		for (int cl = TOP_LEVEL; cl >= 0; --cl) {
-			if (cl != TOP_LEVEL)
-				prev[cl] = prev[cl + 1];
-
-			while (true)
-			{
-				curr[cl] = prev[cl]->get(cl);
-				bool removed = false;
-				LFSKNODE* succ = curr[cl]->get(cl, &removed);
-				if (removed) {
-					if (prev[cl]->CAS(cl, curr[cl], succ, false, false))
-						goto retry;
-					curr[cl] = succ;
-					succ = curr[cl]->get(cl, &removed);
-				}
-				if (curr[cl]->v >= x) {
-					break;
-				}
-				prev[cl] = curr[cl];
-			}
-		}
-		return curr[0]->v == x;
-	}
-
-	bool ADD(int x)
-	{
-		LFSKNODE* preds[TOP_LEVEL + 1];
-		LFSKNODE* currs[TOP_LEVEL + 1];
-
-		int top_level = 0;
-		for (top_level = 0; top_level < TOP_LEVEL; ++top_level)
-			if (rand() % 2 == 1) break;
-
-		LFSKNODE* new_node = new LFSKNODE(x, top_level);
-
-		while (true)
-		{
-			bool found = Find(x, preds, currs);
-			if (found)
-				return false;
-
-			for (int i = 0; i <= top_level; ++i) {
-				LFSKNODE* succ = currs[i];
-				new_node->set(i, succ, false);
-			}
-			LFSKNODE* pred = preds[0];
-			LFSKNODE* succ = currs[0];
-			new_node->set(0, succ, false);
-			if (pred->CAS(0, succ, new_node, false, false) == false)
-				continue;
-			for (int level = 1; level <= top_level; ++level) {
-				while (true)
-				{
-					pred = preds[level];
-					succ = currs[level]; 
-					if (pred->CAS(level, succ, new_node, false, false))
-						break;
-					Find(x, preds, currs);
-				}
-			}
-			return true;
-		}
-
-		return false;
-	}
-
-	bool REMOVE(int x)
-	{
-		LFSKNODE* prev[TOP_LEVEL + 1], * curr[TOP_LEVEL + 1];
-
-		if (Find(x, prev, curr) == false)
-			return false;
-
-		LFSKNODE* r_node = curr[0];
-		int top_level = r_node->top_level;
-		for (int i = top_level; i > 0; --i) {
-			while (true)
-			{
-				bool removed = false;
-				LFSKNODE* succ = r_node->get(i, &removed);
-				if (removed)
-					break;
-
-				bool ret = r_node->CAS(i, succ, succ, false, true);
-				if (ret)
-					break;
-			}
-		}
-
-		while (true)
-		{
-			bool removed = false;
-			LFSKNODE* succ = r_node->get(0, &removed);
-			if (removed)
-				return false;
-			if (r_node->CAS(0, succ, succ, false, true)) {
-				Find(x, prev, curr);
-				return true;
-			}
-		}
-	}
-
-	bool CONTAINS(int x)
-	{
-
-		/*LFSKNODE* preds[TOP_LEVEL + 1];
-		LFSKNODE* currs[TOP_LEVEL + 1];
-
-		return Find(x, preds, currs);*/
-
-		LFSKNODE* pred = &head;
-		LFSKNODE* curr;
-		LFSKNODE* succ;
-
-		for (int i = TOP_LEVEL; i >= 0; --i) {
-			curr = pred->get(i);
-			while (true)
-			{
-				bool removed = false;
-				succ = curr->get(i,&removed);
-				while (removed)
-				{
-					curr = curr->get(i);
-					succ = curr->get(i, &removed);
-				}
-				if (curr->v < x) {
-					pred = curr;
-					curr = succ;
-				}
-				else {
-					break;
-				}
-			}
-		}
-		return curr->v == x;
-	}
-
-	void print20()
-	{
-		LFSKNODE* p = head.get(0);
-		for (int i = 0; i < 20; ++i) {
-			if (p == &tail) break;
-			cout << p->v << ", ";
-			p = p->get(0);
-		}
-		cout << endl;
-	}
-
-	void clear()
-	{
-		LFSKNODE* p = head.get(0);
-		while (p != &tail) {
-			LFSKNODE* t = p;
-			p = p->get(0);
-			delete t;
-		}
-		for (int i = 0; i <= TOP_LEVEL; ++i)
-			head.set(i, &tail, false);
-	}
-};
-
-#define MY_SET LF_SKSET
+#define MY_SET C_SKSET
 
 //SET my_set;   // 성긴 동기화
 //F_SET my_set;   // 세밀한 동기화
@@ -2205,9 +1777,6 @@ void worker_check(MY_SET* my_set, vector<HISTORY>* history, int num_threads, int
 	tl_id = thread_id;
 	for (int i = 0; i < N / num_threads; ++i) {
 		int op = rand() % 3;
-		/*op = rand() % 2;
-		if (op == 1)
-			op++;*/
 		switch (op) {
 		case 0: {
 			int v = rand() % RANGE;
@@ -2297,7 +1866,7 @@ int main()
 		MY_SET my_set;
 		auto start_t = high_resolution_clock::now();
 		for (int i = 0; i < num_threads; ++i)
-			threads.emplace_back(worker, &my_set, &history[i], num_threads, i);
+			threads.emplace_back(worker, &my_set , &history[i], num_threads, i);
 		for (auto& th : threads)
 			th.join();
 		auto end_t = high_resolution_clock::now();
