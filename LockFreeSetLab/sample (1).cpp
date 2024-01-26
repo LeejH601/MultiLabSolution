@@ -5,6 +5,8 @@
 #include <array>
 #include <mutex>
 #include <set>
+#include <shared_mutex>
+#include <tbb/rw_mutex.h>
 
 using namespace std;
 using namespace chrono;
@@ -57,7 +59,7 @@ public:
 
 class SET {
 	NODE head, tail;
-	null_mutex ll;
+	mutex ll;
 public:
 	SET()
 	{
@@ -121,6 +123,188 @@ public:
 		}
 		bool res = (curr->v == x);
 		ll.unlock();
+		return res;
+	}
+	void print20()
+	{
+		NODE* p = head.next;
+		for (int i = 0; i < 20; ++i) {
+			if (p == &tail) break;
+			cout << p->v << ", ";
+			p = p->next;
+		}
+		cout << endl;
+	}
+
+	void clear()
+	{
+		NODE* p = head.next;
+		while (p != &tail) {
+			NODE* t = p;
+			p = p->next;
+			delete t;
+		}
+		head.next = &tail;
+	}
+};
+
+class RW_SET {
+	NODE head, tail;
+	shared_mutex ll;
+public:
+	RW_SET()
+	{
+		head.v = 0x80000000;
+		tail.v = 0x7FFFFFFF;
+		head.next = &tail;
+		tail.next = nullptr;
+	}
+	bool ADD(int x)
+	{
+		NODE* prev = &head;
+		ll.lock();
+		NODE* curr = prev->next;
+		while (curr->v < x) {
+			prev = curr;
+			curr = curr->next;
+		}
+		if (curr->v != x) {
+			NODE* node = new NODE{ x };
+			node->next = curr;
+			prev->next = node;
+			ll.unlock();
+			return true;
+		}
+		else
+		{
+			ll.unlock();
+			return false;
+		}
+	}
+
+	bool REMOVE(int x)
+	{
+		NODE* prev = &head;
+		ll.lock();
+		NODE* curr = prev->next;
+		while (curr->v < x) {
+			prev = curr;
+			curr = curr->next;
+		}
+		if (curr->v != x) {
+			ll.unlock();
+			return false;
+		}
+		else {
+			prev->next = curr->next;
+			delete curr;
+			ll.unlock();
+			return true;
+		}
+	}
+
+	bool CONTAINS(int x)
+	{
+		NODE* prev = &head;
+		ll.lock_shared();
+		NODE* curr = prev->next;
+		while (curr->v < x) {
+			prev = curr;
+			curr = curr->next;
+		}
+		bool res = (curr->v == x);
+		ll.unlock_shared();
+		return res;
+	}
+	void print20()
+	{
+		NODE* p = head.next;
+		for (int i = 0; i < 20; ++i) {
+			if (p == &tail) break;
+			cout << p->v << ", ";
+			p = p->next;
+		}
+		cout << endl;
+	}
+
+	void clear()
+	{
+		NODE* p = head.next;
+		while (p != &tail) {
+			NODE* t = p;
+			p = p->next;
+			delete t;
+		}
+		head.next = &tail;
+	}
+};
+
+class TBBRW_SET {
+	NODE head, tail;
+	tbb::rw_mutex ll;
+public:
+	TBBRW_SET()
+	{
+		head.v = 0x80000000;
+		tail.v = 0x7FFFFFFF;
+		head.next = &tail;
+		tail.next = nullptr;
+	}
+	bool ADD(int x)
+	{
+		NODE* prev = &head;
+		ll.lock();
+		NODE* curr = prev->next;
+		while (curr->v < x) {
+			prev = curr;
+			curr = curr->next;
+		}
+		if (curr->v != x) {
+			NODE* node = new NODE{ x };
+			node->next = curr;
+			prev->next = node;
+			ll.unlock();
+			return true;
+		}
+		else
+		{
+			ll.unlock();
+			return false;
+		}
+	}
+
+	bool REMOVE(int x)
+	{
+		NODE* prev = &head;
+		ll.lock();
+		NODE* curr = prev->next;
+		while (curr->v < x) {
+			prev = curr;
+			curr = curr->next;
+		}
+		if (curr->v != x) {
+			ll.unlock();
+			return false;
+		}
+		else {
+			prev->next = curr->next;
+			delete curr;
+			ll.unlock();
+			return true;
+		}
+	}
+
+	bool CONTAINS(int x)
+	{
+		NODE* prev = &head;
+		ll.lock_shared();
+		NODE* curr = prev->next;
+		while (curr->v < x) {
+			prev = curr;
+			curr = curr->next;
+		}
+		bool res = (curr->v == x);
+		ll.unlock_shared();
 		return res;
 	}
 	void print20()
@@ -2003,7 +2187,7 @@ public:
 				bool removed = false;
 				LFSKNODE* succ = curr[cl]->get(cl, &removed);
 				if (removed) {
-					if (prev[cl]->CAS(cl, curr[cl], succ, false, false))
+					if (prev[cl]->CAS(cl, curr[cl], succ, false, false) == false)
 						goto retry;
 					curr[cl] = succ;
 					succ = curr[cl]->get(cl, &removed);
@@ -2154,7 +2338,7 @@ public:
 	}
 };
 
-#define MY_SET LF_SKSET
+#define MY_SET LF_SET
 
 //SET my_set;   // 성긴 동기화
 //F_SET my_set;   // 세밀한 동기화
@@ -2172,14 +2356,14 @@ public:
 	HISTORY(int o, int i, bool re) : op(o), i_value(i), o_value(re) {}
 };
 
-constexpr int RANGE = 1000;
+constexpr int RANGE = 50;
 constexpr int N = 4000000;
 
 void worker(MY_SET* my_set, vector<HISTORY>* history, int num_threads, int thread_id)
 {
 	tl_id = thread_id;
 	for (int i = 0; i < N / num_threads; ++i) {
-		int op = rand() % 3;
+		int op = rand() % 10;
 		switch (op) {
 		case 0: {
 			int v = rand() % RANGE;
@@ -2191,7 +2375,8 @@ void worker(MY_SET* my_set, vector<HISTORY>* history, int num_threads, int threa
 			my_set->REMOVE(v);
 			break;
 		}
-		case 2: {
+		default:
+		{
 			int v = rand() % RANGE;
 			my_set->CONTAINS(v);
 			break;
@@ -2204,7 +2389,7 @@ void worker_check(MY_SET* my_set, vector<HISTORY>* history, int num_threads, int
 {
 	tl_id = thread_id;
 	for (int i = 0; i < N / num_threads; ++i) {
-		int op = rand() % 3;
+		int op = rand() % 4;
 		/*op = rand() % 2;
 		if (op == 1)
 			op++;*/
@@ -2219,7 +2404,8 @@ void worker_check(MY_SET* my_set, vector<HISTORY>* history, int num_threads, int
 			history->emplace_back(1, v, my_set->REMOVE(v));
 			break;
 		}
-		case 2: {
+		case 2:
+		case 3:{
 			int v = rand() % RANGE;
 			history->emplace_back(2, v, my_set->CONTAINS(v));
 			break;
